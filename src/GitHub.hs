@@ -15,17 +15,17 @@ module GitHub
     ( startApp
     ) where
 
-import Control.Monad.Logger
-import Control.Monad.Reader
-import Control.Monad.Trans.Either
-import Data.Aeson
-import Database.Persist
-import Database.Persist.Sqlite
-import Database.Persist.TH
-import GHC.Generics
-import Network.Wai
-import Network.Wai.Handler.Warp
-import Servant
+import           Control.Monad.Logger
+import           Control.Monad.Reader
+import           Control.Monad.Trans.Either
+import           Data.Aeson
+import           Database.Persist
+import           Database.Persist.Sqlite
+import           Database.Persist.TH
+import           GHC.Generics
+import           Network.Wai
+import           Network.Wai.Handler.Warp
+import           Servant
 
 share [mkPersist sqlSettings, mkMigrate "migrateAll"] [persistLowerCase|
 Organization
@@ -66,41 +66,31 @@ type GitHub = "organizations" :> Crud Organization
          :<|> "repositories" :> Crud Repository
 type GitHubT = ReaderT ConnectionPool (EitherT ServantErr IO)
 
-class HasCrud a where
+class (PersistEntity a, SqlBackend ~ PersistEntityBackend a) => HasCrud a where
   create :: a -> GitHubT a
-  create = undefined
+  create organization = do
+    entity <- runDB $ insertEntity organization
+    return $ entityVal entity
 
   read :: Key a -> GitHubT a
-  read = undefined
+  read entityId = do
+    maybeEntity <- runDB $ get entityId
+    case maybeEntity of
+      Nothing     -> undefined
+      Just entity -> return entity
 
   readAll :: GitHubT [a]
-  readAll = undefined
+  readAll = do
+    entities <- runDB $ selectList [] []
+    return $ map entityVal entities
 
   update :: Key a -> a -> GitHubT a
   update = undefined
 
   delete :: Key a -> GitHubT ()
-  delete = undefined
-
-instance HasCrud Organization where
-  create organization = do
-    entity <- runDB $ insertEntity organization
-    return $ entityVal entity
-
-  read organizationId = do
-    maybeOrganization <- runDB $ get organizationId
-    case maybeOrganization of
-      Nothing           -> undefined
-      Just organization -> return organization
-
-  readAll = do
-    entities <- runDB $ selectList [] []
-    return $ map entityVal entities
-
-  update organizationId _ = runDB $ updateGet organizationId []
-
   delete = runDB . Database.Persist.Sqlite.delete
 
+instance HasCrud Organization
 instance HasCrud Repository
 
 startApp :: IO ()
@@ -131,9 +121,10 @@ crud :: HasCrud a => (a -> GitHubT a)
                 :<|> (Key a -> GitHubT ())
 crud = create
   :<|> GitHub.read
-  :<|> GitHub.readAll
+  :<|> readAll
   :<|> GitHub.update
   :<|> GitHub.delete
+
 
 runDB :: SqlPersistT IO a -> GitHubT a
 runDB query = ask >>= liftIO . runSqlPool query
