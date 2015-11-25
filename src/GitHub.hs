@@ -1,6 +1,16 @@
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE RecordWildCards   #-}
-{-# LANGUAGE TypeOperators     #-}
+{-# LANGUAGE DataKinds                  #-}
+{-# LANGUAGE DeriveGeneric              #-}
+{-# LANGUAGE ExistentialQuantification  #-}
+{-# LANGUAGE FlexibleContexts           #-}
+{-# LANGUAGE FlexibleInstances          #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE MultiParamTypeClasses      #-}
+{-# LANGUAGE OverloadedStrings          #-}
+{-# LANGUAGE QuasiQuotes                #-}
+{-# LANGUAGE RecordWildCards            #-}
+{-# LANGUAGE TemplateHaskell            #-}
+{-# LANGUAGE TypeFamilies               #-}
+{-# LANGUAGE TypeOperators              #-}
 module GitHub
     ( startApp
     ) where
@@ -8,36 +18,122 @@ module GitHub
 import Control.Monad.Logger
 import Control.Monad.Reader
 import Control.Monad.Trans.Either
-import Database.Persist.Sql
+import Data.Aeson
+import Database.Persist
 import Database.Persist.Sqlite
-import GitHub.Organization.API
-import GitHub.Types
+import Database.Persist.TH
+import GHC.Generics
 import Network.Wai
 import Network.Wai.Handler.Warp
 import Servant
 
+share [mkPersist sqlSettings, mkMigrate "migrateAll"] [persistLowerCase|
+Organization
+  name String
+  deriving Generic
+
+Repository
+  name String
+  organizationId OrganizationId
+  deriving Generic
+|]
+
+instance ToJSON Organization
+instance ToJSON Repository
+
+instance FromJSON Organization
+instance FromJSON Repository
+
+instance FromText (Key Organization) where
+  fromText = Just . OrganizationKey . SqlBackendKey . Prelude.read . show
+
+instance FromText (Key Repository) where
+  fromText = Just . RepositoryKey . SqlBackendKey . Prelude.read . show
+
+type Create a  = ReqBody '[JSON] a :> Post '[JSON] a
+type Read a    = Capture "id" (Key a) :> Get '[JSON] a
+type ReadAll a = Get '[JSON] [a]
+type Update a  = Capture "id" (Key a) :> ReqBody '[JSON] a :> Put '[JSON] a
+type Delete a  = Capture "id" (Key a) :> Servant.Delete '[JSON] ()
+
+type Crud a = Create a
+         :<|> GitHub.Read a
+         :<|> ReadAll a
+         :<|> GitHub.Update a
+         :<|> GitHub.Delete a
+
+type GitHub = "organizations" :> Crud Organization
+         :<|> "repositories" :> Crud Repository
+type GitHubT = ReaderT ConnectionPool (EitherT ServantErr IO)
+
+class HasCrud a where
+  create :: a -> GitHubT a
+  create = undefined
+
+  read :: Key a -> GitHubT a
+  read = undefined
+
+  readAll :: GitHubT [a]
+  readAll = undefined
+
+  update :: Key a -> a -> GitHubT a
+  update = undefined
+
+  delete :: Key a -> GitHubT ()
+  delete = undefined
+
+instance HasCrud Organization where
+  create organization = do
+    entity <- runDB $ insertEntity organization
+    return $ entityVal entity
+
+  read organizationId = do
+    maybeOrganization <- runDB $ get organizationId
+    case maybeOrganization of
+      Nothing           -> undefined
+      Just organization -> return organization
+
+  readAll = do
+    entities <- runDB $ selectList [] []
+    return $ map entityVal entities
+
+  update organizationId _ = runDB $ updateGet organizationId []
+
+  delete = runDB . Database.Persist.Sqlite.delete
+
+instance HasCrud Repository
+
 startApp :: IO ()
 startApp = do
-  config <- getConfig
-  run 8080 $ app config
+  pool <- createPool
+  runSqlPool (runMigration migrateAll) pool
+  run 8080 $ app pool
 
-getConfig :: IO Config
-getConfig = Config <$> getConnectionPool
+createPool :: IO ConnectionPool
+createPool = runStdoutLoggingT $ createSqlitePool "db" 1
 
-getConnectionPool :: IO ConnectionPool
-getConnectionPool = runStdoutLoggingT $ createSqlitePool "github" 1
+app :: ConnectionPool -> Application
+app = serve gitHub . readServer
 
-app :: Config -> Application
-app = serve gitHubAPI . readServer
+gitHub :: Proxy GitHub
+gitHub = Proxy
 
-gitHubAPI :: Proxy GitHubAPI
-gitHubAPI = Proxy
+readServer :: ConnectionPool -> Server GitHub
+readServer pool = enter (runReaderTNat pool) server
 
-readServer :: Config -> Server GitHubAPI
-readServer = undefined
+server :: ServerT GitHub GitHubT
+server = crud :<|> crud
 
-readerToEither :: Config -> GitHubT :~> EitherT ServantErr IO
-readerToEither Config{..} = Nat $ \x -> runReaderT x connectionPool
+crud :: HasCrud a => (a -> GitHubT a)
+                :<|> (Key a -> GitHubT a)
+                :<|> GitHubT [a]
+                :<|> (Key a -> a -> GitHubT a)
+                :<|> (Key a -> GitHubT ())
+crud = create
+  :<|> GitHub.read
+  :<|> GitHub.readAll
+  :<|> GitHub.update
+  :<|> GitHub.delete
 
-server :: ServerT GitHubAPI GitHubT
-server = organizationAPI
+runDB :: SqlPersistT IO a -> GitHubT a
+runDB query = ask >>= liftIO . runSqlPool query
