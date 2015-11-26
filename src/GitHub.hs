@@ -53,7 +53,7 @@ instance FromText (Key Repository) where
 type Create a  = ReqBody '[JSON] a :> Post '[JSON] a
 type Read a    = Capture "id" (Key a) :> Get '[JSON] a
 type ReadAll a = Get '[JSON] [a]
-type Update a  = Capture "id" (Key a) :> ReqBody '[JSON] a :> Put '[JSON] a
+type Update a  = Capture "id" (Key a) :> ReqBody '[JSON] a :> Put '[JSON] ()
 type Delete a  = Capture "id" (Key a) :> Servant.Delete '[JSON] ()
 
 type Crud a = Create a
@@ -76,7 +76,7 @@ class (PersistEntity a, SqlBackend ~ PersistEntityBackend a) => HasCrud a where
   read entityId = do
     maybeEntity <- runDB $ get entityId
     case maybeEntity of
-      Nothing     -> undefined
+      Nothing     -> lift $ left err404
       Just entity -> return entity
 
   readAll :: GitHubT [a]
@@ -84,8 +84,8 @@ class (PersistEntity a, SqlBackend ~ PersistEntityBackend a) => HasCrud a where
     entities <- runDB $ selectList [] []
     return $ map entityVal entities
 
-  update :: Key a -> a -> GitHubT a
-  update = undefined
+  update :: Key a -> a -> GitHubT ()
+  update entityId = runDB . replace entityId
 
   delete :: Key a -> GitHubT ()
   delete = runDB . Database.Persist.Sqlite.delete
@@ -117,7 +117,7 @@ server = crud :<|> crud
 crud :: HasCrud a => (a -> GitHubT a)
                 :<|> (Key a -> GitHubT a)
                 :<|> GitHubT [a]
-                :<|> (Key a -> a -> GitHubT a)
+                :<|> (Key a -> a -> GitHubT ())
                 :<|> (Key a -> GitHubT ())
 crud = create
   :<|> GitHub.read
