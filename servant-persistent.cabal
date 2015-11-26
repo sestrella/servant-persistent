@@ -5,12 +5,11 @@ description:         Please see README.md
 homepage:            http://github.com/sestrella/servant-persistent
 license:             BSD3
 license-file:        LICENSE
-author:              Author name here
+author:              Sebastián Estrella
 maintainer:          sebas007estrella@gmail.com
-copyright:           2010 Author Here
+copyright:           2015 Sebastián Estrella
 category:            Web
 build-type:          Simple
--- extra-source-files:
 cabal-version:       >=1.10
 
 library

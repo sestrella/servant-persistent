@@ -125,6 +125,5 @@ crud = create
   :<|> GitHub.update
   :<|> GitHub.delete
 
-
 runDB :: SqlPersistT IO a -> GitHubT a
 runDB query = ask >>= liftIO . runSqlPool query
